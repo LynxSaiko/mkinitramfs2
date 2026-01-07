@@ -1,0 +1,605 @@
+#!/bin/sh
+# =============================================================================
+# LEAKOS INITRAMFS INIT SCRIPT
+# Modified for VirtualBox and ISO boot support
+# =============================================================================
+
+# Set PATH
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+# Colors for output (if supported)
+if [ -t 1 ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    NC='\033[0m' # No Color
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; NC=''
+fi
+
+# -----------------------------------------------------------------------------
+# FUNCTIONS
+# -----------------------------------------------------------------------------
+
+print_header() {
+    echo -e "${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║                   LEAKOS INITRAMFS v1.0                  ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $*"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $*"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $*"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $*"
+}
+
+# Emergency shell with debug info
+problem() {
+    echo ""
+    print_error "Encountered a problem!"
+    echo -e "${YELLOW}Dropping to emergency shell...${NC}"
+    echo ""
+    
+    echo "════════════════════ DEBUG INFORMATION ════════════════════"
+    echo ""
+    echo "1. KERNEL COMMAND LINE:"
+    cat /proc/cmdline 2>/dev/null || echo "  (cannot read)"
+    echo ""
+    
+    echo "2. AVAILABLE BLOCK DEVICES:"
+    ls -la /dev/sd* /dev/vd* /dev/hd* /dev/sr* /dev/cdrom* /dev/nvme* 2>/dev/null | while read line; do
+        echo "  $line"
+    done
+    if [ $? -ne 0 ]; then
+        echo "  No block devices found!"
+        echo "  Contents of /dev/:"
+        ls -la /dev/ 2>/dev/null | head -20
+    fi
+    echo ""
+    
+    echo "3. MOUNT POINTS:"
+    mount 2>/dev/null || echo "  (cannot list)"
+    echo ""
+    
+    echo "4. KERNEL VERSION:"
+    uname -a 2>/dev/null || echo "  (unknown)"
+    echo ""
+    
+    echo "5. MEMORY INFO:"
+    free -h 2>/dev/null || cat /proc/meminfo 2>/dev/null | head -5 || echo "  (cannot read)"
+    echo ""
+    
+    echo "6. DISK PARTITIONS:"
+    cat /proc/partitions 2>/dev/null || echo "  (cannot read)"
+    echo ""
+    
+    echo "7. DMESG (last 20 lines):"
+    dmesg 2>/dev/null | tail -20 || echo "  (cannot read)"
+    echo ""
+    echo "══════════════════════════════════════════════════════════"
+    echo ""
+    echo "Try these commands manually:"
+    echo "  mount -t iso9660 -o ro /dev/sr0 /mnt"
+    echo "  mount -t auto -o ro /dev/sda1 /mnt"
+    echo "  mknod -m 660 /dev/sr0 b 11 0"
+    echo "  ls -la /dev/"
+    echo ""
+    
+    # Start shell
+    export PS1="\033[1;31m(initramfs)\033[0m \w # "
+    exec /bin/sh
+}
+
+# Function to create essential device nodes
+create_device_nodes() {
+    print_info "Creating essential device nodes..."
+    
+    mkdir -p /dev
+    
+    # Character devices
+    mknod -m 622 /dev/console c 5 1 2>/dev/null || print_warning "Cannot create /dev/console"
+    mknod -m 666 /dev/null c 1 3 2>/dev/null || print_warning "Cannot create /dev/null"
+    mknod -m 666 /dev/zero c 1 5 2>/dev/null || print_warning "Cannot create /dev/zero"
+    mknod -m 666 /dev/random c 1 8 2>/dev/null || print_warning "Cannot create /dev/random"
+    mknod -m 666 /dev/urandom c 1 9 2>/dev/null || print_warning "Cannot create /dev/urandom"
+    mknod -m 666 /dev/tty c 5 0 2>/dev/null || print_warning "Cannot create /dev/tty"
+    mknod -m 620 /dev/tty0 c 4 0 2>/dev/null || print_warning "Cannot create /dev/tty0"
+    
+    # Block devices - CD/DVD
+    mknod -m 660 /dev/sr0 b 11 0 2>/dev/null || print_warning "Cannot create /dev/sr0"
+    mknod -m 660 /dev/sr1 b 11 1 2>/dev/null || print_warning "Cannot create /dev/sr1"
+    mknod -m 660 /dev/cdrom b 11 0 2>/dev/null || print_warning "Cannot create /dev/cdrom"
+    
+    # Block devices - SATA/SCSI
+    mknod -m 660 /dev/sda b 8 0 2>/dev/null || print_warning "Cannot create /dev/sda"
+    mknod -m 660 /dev/sda1 b 8 1 2>/dev/null || print_warning "Cannot create /dev/sda1"
+    mknod -m 660 /dev/sda2 b 8 2 2>/dev/null || print_warning "Cannot create /dev/sda2"
+    mknod -m 660 /dev/sda3 b 8 3 2>/dev/null || print_warning "Cannot create /dev/sda3"
+    mknod -m 660 /dev/sdb b 8 16 2>/dev/null || print_warning "Cannot create /dev/sdb"
+    mknod -m 660 /dev/sdb1 b 8 17 2>/dev/null || print_warning "Cannot create /dev/sdb1"
+    
+    # Block devices - VirtIO (VirtualBox/KVM)
+    mknod -m 660 /dev/vda b 254 0 2>/dev/null || print_warning "Cannot create /dev/vda"
+    mknod -m 660 /dev/vda1 b 254 1 2>/dev/null || print_warning "Cannot create /dev/vda1"
+    mknod -m 660 /dev/vdb b 254 16 2>/dev/null || print_warning "Cannot create /dev/vdb"
+    mknod -m 660 /dev/vdb1 b 254 17 2>/dev/null || print_warning "Cannot create /dev/vdb1"
+    
+    # Loop devices (for squashfs)
+    for i in 0 1 2 3 4 5 6 7; do
+        mknod -m 660 /dev/loop$i b 7 $i 2>/dev/null || true
+    done
+    
+    print_success "Device nodes created"
+}
+
+# Mount essential filesystems
+mount_essential() {
+    print_info "Mounting essential filesystems..."
+    
+    # proc
+    if ! mountpoint -q /proc; then
+        mount -t proc proc /proc 2>/dev/null && print_success "Mounted /proc" || print_error "Failed to mount /proc"
+    fi
+    
+    # sys
+    if ! mountpoint -q /sys; then
+        mount -t sysfs sysfs /sys 2>/dev/null && print_success "Mounted /sys" || print_error "Failed to mount /sys"
+    fi
+    
+    # dev (try devtmpfs first, then tmpfs)
+    if ! mountpoint -q /dev; then
+        if mount -t devtmpfs devtmpfs /dev 2>/dev/null; then
+            print_success "Mounted /dev with devtmpfs"
+        else
+            mount -t tmpfs tmpfs /dev 2>/dev/null && print_success "Mounted /dev with tmpfs"
+            # Create basic devices in tmpfs
+            create_device_nodes
+        fi
+    fi
+    
+    # tmp
+    mkdir -p /tmp
+    if ! mountpoint -q /tmp; then
+        mount -t tmpfs tmpfs /tmp 2>/dev/null && print_success "Mounted /tmp" || true
+    fi
+    
+    # run
+    mkdir -p /run
+    if ! mountpoint -q /run; then
+        mount -t tmpfs tmpfs /run 2>/dev/null && print_success "Mounted /run" || true
+    fi
+}
+
+# Parse kernel command line
+parse_cmdline() {
+    print_info "Parsing kernel command line..."
+    
+    # Default values
+    init="/sbin/init"
+    root=""
+    rootdelay=""
+    rootfstype="auto"
+    ro="ro"
+    rootflags=""
+    resume=""
+    noresume=false
+    debug=false
+    quiet=false
+    leakos_mode=false
+    
+    if [ -r /proc/cmdline ]; then
+        cmdline=$(cat /proc/cmdline)
+        echo "  Command line: $cmdline"
+        
+        for param in $cmdline; do
+            case $param in
+                init=*)      init="${param#init=}" ;;
+                root=*)      root="${param#root=}" ;;
+                rootdelay=*) rootdelay="${param#rootdelay=}" ;;
+                rootfstype=*) rootfstype="${param#rootfstype=}" ;;
+                rootflags=*) rootflags="${param#rootflags=}" ;;
+                resume=*)    resume="${param#resume=}" ;;
+                noresume)    noresume=true ;;
+                ro)          ro="ro" ;;
+                rw)          ro="rw" ;;
+                debug)       debug=true ;;
+                quiet)       quiet=true ;;
+                leakos)      leakos_mode=true ;;
+                single)      single_user=true ;;
+                s|S)         single_user=true ;;
+                emergency)   emergency_shell=true ;;
+                -*)          ;; # ignore other switches
+            esac
+        done
+    else
+        print_warning "Cannot read /proc/cmdline"
+    fi
+    
+    # If root not specified, use auto mode
+    if [ -z "$root" ]; then
+        root="auto"
+        print_info "Root not specified, using auto-detection"
+    fi
+    
+    echo "  init: $init"
+    echo "  root: $root"
+    echo "  rootfstype: $rootfstype"
+    echo "  mode: $ro"
+}
+
+# Try to mount a device and look for squashfs
+try_mount_device() {
+    local device="$1"
+    local mount_point="$2"
+    local description="$3"
+    
+    print_info "Trying to mount $description ($device)..."
+    
+    # Try different filesystem types
+    for fs_type in iso9660 udf ext4 ext3 ext2 vfat ntfs btrfs xfs; do
+        if mount -t $fs_type -o ro "$device" "$mount_point" 2>/dev/null; then
+            print_success "Mounted $device as $fs_type"
+            
+            # List contents for debug
+            if [ "$debug" = "true" ]; then
+                echo "  Contents of $mount_point:"
+                ls -la "$mount_point/" 2>/dev/null | head -5
+            fi
+            
+            return 0
+        fi
+    done
+    
+    print_warning "Failed to mount $device"
+    return 1
+}
+
+# Find and mount squashfs file
+find_and_mount_squashfs() {
+    local mount_point="$1"
+    
+    print_info "Searching for squashfs files in $mount_point..."
+    
+    # Define search locations (in order of priority)
+    locations="
+        /boot/sources/
+        /sources/
+        /live/
+        /casper/
+        /Leakos/
+        /os/
+        /system/
+        /
+        ./boot/
+        ./sources/
+    "
+    
+    # Define possible squashfs filenames
+    squashfs_names="
+        rootfs.squashfs
+        filesystem.squashfs
+        system.squashfs
+        live.squashfs
+        root.squashfs
+        leakos.squashfs
+    "
+    
+    # Search in specific locations first
+    for location in $locations; do
+        # Clean up location path
+        location=$(echo "$location" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [ -z "$location" ] && continue
+        
+        for name in $squashfs_names; do
+            local squashfs_path="${mount_point}/${location}${name}"
+            
+            # Remove double slashes
+            squashfs_path=$(echo "$squashfs_path" | sed 's|//|/|g')
+            
+            if [ -f "$squashfs_path" ]; then
+                print_success "Found: $squashfs_path"
+                
+                # Create root directory
+                mkdir -p /.root
+                
+                # Mount squashfs
+                print_info "Mounting squashfs..."
+                if mount -t squashfs -o loop "$squashfs_path" /.root 2>/dev/null; then
+                    print_success "Squashfs mounted successfully"
+                    return 0
+                else
+                    print_error "Failed to mount squashfs"
+                fi
+            fi
+        done
+    done
+    
+    # If not found in specific locations, search recursively
+    print_info "Searching recursively for squashfs files..."
+    local found_files=$(find "$mount_point" -type f -name "*.squashfs" 2>/dev/null | head -5)
+    
+    if [ -n "$found_files" ]; then
+        print_info "Found potential squashfs files:"
+        echo "$found_files"
+        
+        for file in $found_files; do
+            print_info "Trying: $file"
+            mkdir -p /.root
+            if mount -t squashfs -o loop "$file" /.root 2>/dev/null; then
+                print_success "Squashfs mounted successfully from $file"
+                return 0
+            fi
+        done
+    fi
+    
+    return 1
+}
+
+# Main function to find root filesystem
+find_root_filesystem() {
+    print_header
+    
+    # Parse command line
+    parse_cmdline
+    
+    # Wait if rootdelay specified
+    if [ -n "$rootdelay" ]; then
+        print_info "Waiting $rootdelay seconds..."
+        sleep "$rootdelay"
+    fi
+    
+    # Handle different root specifications
+    case "$root" in
+        /dev/*)
+            print_info "Using specified device: $root"
+            mount_and_switch "$root"
+            ;;
+        UUID=*|LABEL=*|PARTUUID=*)
+            print_info "Looking for device by identifier: $root"
+            # In minimal initramfs, we don't have blkid, so fall back to auto
+            print_warning "UUID/LABEL/PARTUUID not supported in minimal initramfs, falling back to auto"
+            root="auto"
+            ;;
+        auto|"")
+            print_info "Auto-detecting root filesystem..."
+            auto_detect_root
+            ;;
+        leakos|LEAKOS)
+            print_info "Leakos mode: Looking for Leakos ISO structure..."
+            leakos_mode=true
+            auto_detect_root
+            ;;
+        *)
+            print_error "Unknown root specification: $root"
+            problem
+            ;;
+    esac
+}
+
+# Auto-detect root filesystem
+auto_detect_root() {
+    # Create mount point
+    local mount_point="/mnt/disk"
+    mkdir -p "$mount_point"
+    
+    print_info "Starting auto-detection..."
+    
+    # Try CD/DVD devices first (for ISO boot)
+    print_info "Phase 1: Checking CD/DVD drives..."
+    for cd_device in /dev/sr0 /dev/sr1 /dev/cdrom; do
+        if [ -b "$cd_device" ] || [ "$leakos_mode" = "true" ]; then
+            if try_mount_device "$cd_device" "$mount_point" "CD/DVD"; then
+                if find_and_mount_squashfs "$mount_point"; then
+                    umount "$mount_point" 2>/dev/null
+                    return 0
+                fi
+                umount "$mount_point" 2>/dev/null
+            fi
+        fi
+    done
+    
+    # Try SCSI/SATA devices
+    print_info "Phase 2: Checking SCSI/SATA drives..."
+    for sd_device in /dev/sda /dev/sdb /dev/sdc /dev/sdd; do
+        if [ -b "$sd_device" ] || [ "$debug" = "true" ]; then
+            # Try the whole disk
+            if try_mount_device "$sd_device" "$mount_point" "Disk"; then
+                if find_and_mount_squashfs "$mount_point"; then
+                    umount "$mount_point" 2>/dev/null
+                    return 0
+                fi
+                umount "$mount_point" 2>/dev/null
+            fi
+            
+            # Try partitions
+            for partition in 1 2 3 4 5 6 7 8 9; do
+                local part_device="${sd_device}${partition}"
+                if [ -b "$part_device" ] || [ "$debug" = "true" ]; then
+                    if try_mount_device "$part_device" "$mount_point" "Partition $part_device"; then
+                        if find_and_mount_squashfs "$mount_point"; then
+                            umount "$mount_point" 2>/dev/null
+                            return 0
+                        fi
+                        umount "$mount_point" 2>/dev/null
+                    fi
+                fi
+            done
+        fi
+    done
+    
+    # Try VirtIO devices (VirtualBox/KVM)
+    print_info "Phase 3: Checking VirtIO drives..."
+    for vd_device in /dev/vda /dev/vdb /dev/vdc /dev/vdd; do
+        if [ -b "$vd_device" ] || [ "$debug" = "true" ]; then
+            if try_mount_device "$vd_device" "$mount_point" "VirtIO Disk"; then
+                if find_and_mount_squashfs "$mount_point"; then
+                    umount "$mount_point" 2>/dev/null
+                    return 0
+                fi
+                umount "$mount_point" 2>/dev/null
+            fi
+            
+            # Try partitions
+            for partition in 1 2 3 4 5 6 7 8 9; do
+                local part_device="${vd_device}${partition}"
+                if [ -b "$part_device" ] || [ "$debug" = "true" ]; then
+                    if try_mount_device "$part_device" "$mount_point" "VirtIO Partition $part_device"; then
+                        if find_and_mount_squashfs "$mount_point"; then
+                            umount "$mount_point" 2>/dev/null
+                            return 0
+                        fi
+                        umount "$mount_point" 2>/dev/null
+                    fi
+                fi
+            done
+        fi
+    done
+    
+    # Last resort: try to mount directly as root filesystem (not squashfs)
+    print_info "Phase 4: Trying direct mount as root filesystem..."
+    mkdir -p /.root
+    for device in /dev/sda1 /dev/vda1 /dev/sda /dev/vda; do
+        if [ -b "$device" ] || [ "$debug" = "true" ]; then
+            print_info "Trying direct mount of $device as root..."
+            for fs_type in ext4 ext3 ext2 vfat; do
+                if mount -t $fs_type -o "$ro" "$device" /.root 2>/dev/null; then
+                    print_success "Directly mounted $device as $fs_type"
+                    # Check if it looks like a root filesystem
+                    if [ -x /.root/sbin/init ] || [ -x /.root/bin/init ] || [ -x /.root/init ]; then
+                        print_success "Valid root filesystem found on $device"
+                        return 0
+                    else
+                        print_warning "$device mounted but doesn't look like a root filesystem"
+                        umount /.root 2>/dev/null
+                    fi
+                fi
+            done
+        fi
+    done
+    
+    print_error "Auto-detection failed! Could not find root filesystem"
+    return 1
+}
+
+# Mount specified device and switch root
+mount_and_switch() {
+    local device="$1"
+    local mount_point="/mnt/device"
+    
+    mkdir -p "$mount_point"
+    
+    print_info "Mounting $device..."
+    
+    if mount -t "$rootfstype" -o "$ro" "$device" "$mount_point" 2>/dev/null; then
+        print_success "Mounted $device"
+        
+        # Check if it's a squashfs or regular filesystem
+        if [ -f "$mount_point/rootfs.squashfs" ]; then
+            print_info "Found rootfs.squashfs, mounting it..."
+            mkdir -p /.root
+            if mount -t squashfs -o loop "$mount_point/rootfs.squashfs" /.root; then
+                print_success "Squashfs mounted"
+                umount "$mount_point" 2>/dev/null
+                return 0
+            fi
+        else
+            # Direct root filesystem
+            mkdir -p /.root
+            if mount --move "$mount_point" /.root; then
+                print_success "Moved mount to /.root"
+                return 0
+            fi
+        fi
+    fi
+    
+    print_error "Failed to mount or use $device"
+    return 1
+}
+
+# Switch to real root and execute init
+switch_to_real_root() {
+    print_info "Switching to real root filesystem..."
+    
+    # Clean up mount points
+    umount /mnt/disk 2>/dev/null
+    umount /mnt/device 2>/dev/null
+    umount /cdrom 2>/dev/null
+    umount /hdd 2>/dev/null
+    
+    # Find init binary
+    local init_path=""
+    for path in /sbin/init /bin/init /init /usr/lib/systemd/systemd; do
+        if [ -x "/.root$path" ]; then
+            init_path="$path"
+            print_success "Found init at $init_path"
+            break
+        fi
+    done
+    
+    if [ -z "$init_path" ]; then
+        print_error "Cannot find init binary in /.root"
+        echo "Contents of /.root:"
+        ls -la /.root/ 2>/dev/null || echo "  (cannot list)"
+        problem
+    fi
+    
+    # Debug output
+    if [ "$debug" = "true" ]; then
+        echo "  init: $init_path"
+        echo "  root: /.root"
+        echo "  cmdline: $(cat /proc/cmdline 2>/dev/null)"
+    fi
+    
+    print_success "Switching root..."
+    exec switch_root /.root "$init_path"
+    
+    # If we get here, switch_root failed
+    print_error "switch_root failed!"
+    problem
+}
+
+# -----------------------------------------------------------------------------
+# MAIN EXECUTION
+# -----------------------------------------------------------------------------
+
+# Set trap for errors
+trap 'print_error "Script terminated unexpectedly"; problem' ERR
+
+# Start main process
+print_info "Starting initialization..."
+
+# 1. Mount essential filesystems
+mount_essential
+
+# 2. Create device nodes (in case devtmpfs failed)
+create_device_nodes
+
+# 3. Find and mount root filesystem
+if find_root_filesystem; then
+    print_success "Root filesystem found and mounted"
+    
+    # 4. Switch to real root
+    switch_to_real_root
+else
+    print_error "Failed to find root filesystem"
+    problem
+fi
+
+# This point should never be reached
+print_error "Unexpected exit from init script"
+problem
