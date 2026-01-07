@@ -1,0 +1,61 @@
+#!/bin/bash
+# mkinitramfs for Leakos - SIMPLE VERSION
+
+echo "Creating Leakos initramfs..."
+
+# Working directory
+WDIR=$(mktemp -d /tmp/initrd-work.XXXXXX)
+
+# Minimal structure
+mkdir -p $WDIR/{bin,dev,proc,sys,mnt,cdrom,run,tmp}
+mkdir -p $WDIR/usr/{bin,sbin}
+mkdir -p $WDIR/{etc,root,.root}
+
+# Symlinks
+ln -s usr/bin $WDIR/bin 2>/dev/null
+ln -s usr/sbin $WDIR/sbin 2>/dev/null
+ln -s bin $WDIR/usr/sbin 2>/dev/null
+
+# Copy only ESSENTIAL binaries
+echo "Copying essential binaries..."
+ESSENTIAL_BINS="sh echo cat ls mount umount mkdir mknod sleep cp"
+
+for bin in $ESSENTIAL_BINS; do
+    if command -v $bin >/dev/null 2>&1; then
+        bin_path=$(command -v $bin)
+        cp "$bin_path" $WDIR/bin/ 2>/dev/null && echo "  Added: $bin"
+    else
+        echo "  Warning: $bin not found"
+    fi
+done
+
+# Copy init script
+echo "Installing init script..."
+cp /usr/share/mkinitramfs/init.in $WDIR/init
+chmod +x $WDIR/init
+
+# Create minimal /etc/passwd and /etc/group
+echo "Creating minimal /etc files..."
+echo "root:x:0:0:root:/root:/bin/sh" > $WDIR/etc/passwd
+echo "root:x:0:" > $WDIR/etc/group
+echo "/bin/sh" > $WDIR/etc/shells
+
+# Create output filename
+if [ -n "$1" ]; then
+    OUTPUT="initrd.img-$1"
+else
+    OUTPUT="initrd.img-leakos"
+fi
+
+# Create cpio archive
+echo "Creating $OUTPUT..."
+(cd $WDIR && find . | cpio -o -H newc --quiet 2>/dev/null | gzip -9) > "$OUTPUT"
+
+# Cleanup
+rm -rf $WDIR
+
+# Show result
+echo "Done!"
+echo "File: $OUTPUT"
+echo "Size: $(ls -lh "$OUTPUT" | awk '{print $5}')"
+echo "MD5: $(md5sum "$OUTPUT" | cut -d' ' -f1)"
